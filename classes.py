@@ -3,20 +3,26 @@ pi= np.pi
 
 class Grid():
     """
-    WHAT:  a class that contains the data about the grid (polar)
+    WHAT:  a class that contains the data about the grid
     ========
     INPUT: 
         directory (string): where the output files are located
     ========
     OUTPUTS:
         directory (string): same as directory (just in case!)
-        x (array): the azimuthal grid
-        y (array): the radial grid w/o ghost cells
+        x (array): the azimuthal grid in polar
+        y (array): the radial grid w/o ghost cells in polar
+        z (array): the vertical grid
         ywg (array): the radial grid w ghost cells
         nx (int): NX
         ny (int): NY
+        nz (int): NZ
         xmid (array): center of x
         ymid (array): center of y
+        zmid (array): center of z
+        nghx(int): number of ghost cells in x
+        nghy(int): number of ghost cells in y
+        nghz(int): number of ghost cells in z
     """
     def __init__(self, directory):
         # check if the directory is in the proper form
@@ -33,7 +39,13 @@ class Grid():
             y = np.loadtxt(directory+"domain_y.dat")
         except IOError:
             print("IOError with domain_y.dat")
+        # read z domain
+        try:
+            z = np.loadtxt(directory+"domain_z.dat")
+        except IOError:
+            print("IOError with domain_z.dat")
         # find the number of ghost cells
+        nghx = 0; nghy = 0; nghz = 0
         try:
             data = open(directory+"summary0.dat",'r').readlines()
             for line in data:
@@ -42,19 +54,43 @@ class Grid():
                     for each in members:
                         if "NGHY" in each:
                             nghy = int(each[-1])
-                    break
+                if "NGHX" in line:
+                    members = line.split()
+                    for each in members:
+                        if "NGHX" in each:
+                            nghx = int(each[-1])
+                if "NGHZ" in line:
+                    members = line.split()
+                    for each in members:
+                        if "NGHZ" in each:
+                            nghz = int(each[-1])
         except IOError:
             print("IOError with summary0.dat")
-            nghy = 3
         self.directory = directory
         self.x = x
         self.y = y[nghy:-nghy]
+        self.z = z[nghz:-nghz]
+        self.xwg = x
         self.ywg = y
+        self.zwg = z
+        self.nghx = nghx
         self.nghy = nghy
-        self.xmid = 0.5*(x[:-1]+x[1:])
+        self.nghz = nghz
+        self.xmid = 0.5*(self.x[:-1]+self.x[1:])
         self.ymid = 0.5*(self.y[:-1]+self.y[1:])
-        self.nx = self.xmid.size
-        self.ny = self.ymid.size
+        self.zmid = 0.5*(self.z[:-1]+self.z[1:])
+        if self.xmid.size == 1: 
+            self.nx = 0
+        else: 
+            self.nx = self.xmid.size
+        if self.ymid.size == 1: 
+            self.ny = 0
+        else: 
+            self.ny = self.ymid.size
+        if self.zmid.size == 1: 
+            self.nz = 0
+        else: 
+            self.nz = self.zmid.size
 
 class ReadField():
     """
@@ -65,20 +101,20 @@ class ReadField():
         name (string): the field which is going to be read including
                        "dens" for surface density
                        "energy" for energy
-                       "vx" for azimuthal angular velocity
-                       "vy" for radial velocity
-                       "vorticity" for vorticity
-                       "vortensity" for vorticity divided by density
+                       "vx" 
+                       "vy" 
+                       "vz" 
+                       "press" for pressure
+                       
         nout (int): the output number
-        nx (int): NX
-        ny (int): NY
     ========
     OUTPUT:
-        field (array): an (NX,NY)-shaped array filled with the 2D field
+        field (array): an (NX,NY,NZ)-shaped array filled with the 2D field
         name (string): name of the field
         nout (int): the output number
+        time (float): time in code unit
     """
-    def __init__(self, directory, name, nout, nx, ny):
+    def __init__(self, directory, name, nout):
         # check if the directory is in the proper form
         if directory != './':
             if directory[-1] != '/':
@@ -86,57 +122,85 @@ class ReadField():
         # read the field
         self.name = name
         self.nout = nout
-        if self.name in ["dens", "energy", "vx", "vy"]:
+        grid = Grid(directory)
+        grid_size = np.array([grid.nz, grid.ny, grid.nx])
+        non_zeros = grid_size[grid_size.nonzero()]
+        if self.name in ["dens", "energy", "vx", "vy", "vz"]:
             try:
                 filename = "{}gas{}{}.dat".format(directory,name,nout)
-                self.field = np.fromfile(filename).reshape(ny,nx)
+                self.field = np.fromfile(filename).reshape(non_zeros)
             except IOError:
                 print("IOError with {}".format(filename))
-        elif self.name == "vorticity":
-            # vorticity (= curl of v) is calculated at the lower right corner of each grid
-            vtheta = ReadField(directory, 'vx', nout, nx, ny).field
-            vr = ReadField(directory, 'vy', nout, nx, ny).field
-            grid = Grid(directory)
-            r = grid.y
-            theta = grid.x
-            rmid = grid.ymid
-            tmid = grid.xmid
-            dtheta = tmid[1]-tmid[0]  #evenly spaced theta
-            t2d, r2d = np.meshgrid(theta,r)
-            t2dm, r2dm = np.meshgrid(tmid,rmid)
-            # d(rvtheta)/dr
-            drdvtheta = (r2dm[1:,:]*vtheta[1:,:]-r2dm[:-1,:]*vtheta[:-1,:])/(r2dm[1:,:]-r2dm[:-1,:])
-            # adding the first ring equals to the second ring
-            drdvtheta = np.concatenate(([drdvtheta[0,:]],drdvtheta), axis=0)
-            # d(vr)/dtheta
-            dthetadvr = (vr[:,1:]-vr[:,:-1])/dtheta
-            # calculating the last column
-            dthetadvr = np.concatenate((dthetadvr,np.array([((vr[:,0]-vr[:,-1])/dtheta)]).T), axis=1)
-            #here is the vorticity
-            vorticity = (drdvtheta - dthetadvr)/r2dm
-            # vorticity is calculated now at the grid corners, 
-            # we need to bring it to the grid centre
-            # So we do a bilinear interpolation ...
-            vorticity_c = vorticity[:-1,:-1] * r2d[:-2,:-2] * (t2d[:-2,1:-1]-t2dm[:-1,:-1])  * (r2d[1:-1,:-2]-r2dm[:-1,:-1])
-            vorticity_c += vorticity[:-1,1:] * r2d[:-2,:-2] * (t2dm[:-1,:-1]-t2d[:-2,:-2])   * (r2d[1:-1,:-2]-r2dm[:-1,:-1])
-            vorticity_c += vorticity[1:,:-1] * r2d[:-2,:-2] * (t2d[:-2,1:-1]-t2dm[:-1,:-1])  * (r2dm[:-1,:-1]-r2d[:-2,:-2])
-            vorticity_c += vorticity[1:,1:]  * r2d[:-2,:-2] * (t2dm[:-1,:-1]-t2d[:-2,:-2])   * (r2dm[:-1,:-1]-r2d[:-2,:-2])
-            # we need to fill the last column
-            vorticity_c = np.concatenate((vorticity_c,np.array([vorticity_c[:,0]*0]).T), axis=1)
-            vorticity_c[:,-1] = vorticity[:-1,-1] * r[:-2] * (theta[-1]-tmid[-1])  * (r[1:-1]-rmid[:-1])
-            vorticity_c[:,-1] += vorticity[:-1,0] * r[:-2] * (tmid[-1]-theta[-2])   * (r[1:-1]-rmid[:-1])
-            vorticity_c[:,-1] += vorticity[1:,-1] * r[:-2] * (theta[-1]-tmid[-1])  * (rmid[:-1]-r[:-2])
-            vorticity_c[:,-1] += vorticity[1:,0]  * r[:-2] * (tmid[-1]-theta[-2])   * (rmid[:-1]-r[:-2])
-            # and low the last row
-            vorticity_c = np.concatenate((vorticity_c,[vorticity_c[-1,:]]), axis=0)
-            #
-            vorticity_c /= r2d[:-1,:-1] * (t2d[:-1,1:]-t2d[:-1,:-1]) * (r2d[1:,:-1]-r2d[:-1,:-1])
-            self.field = vorticity_c
-        elif self.name == "vortensity":
-            dens = ReadField(directory, 'dens', nout, nx, ny).field 
-            vorticity = ReadField(directory, 'vorticity', nout, nx, ny).field
-            vortensity = vorticity/dens
-            self.field = vortensity
+        if self.name == "press":
+            # find adiabatic index
+            try:
+                data = open(directory+f"summary{nout:d}.dat",'r').readlines()
+                for line in data:
+                    if "GAMMA" in line:
+                        members = line.split()
+                        gamma = float(members[-1])
+            except IOError:
+                print(f"IOError with summary{nout:d}.dat file")
+            
+            energy = ReadField(directory=directory, name='energy', nout=nout)
+            self.field = energy.field * (gamma-1) 
+            
+        # find the time 
+        try:
+            data = open(directory+f"summary{nout:d}.dat",'r').readlines()
+            for line in data:
+                if "simulation time" in line:
+                    members = line.split()
+                    self.time = float(members[5])
+        except IOError:
+            print(f"IOError with summary{nout:d}.dat file")
+        #"vorticity" for vorticity (only for 2d polar)
+        #"vortensity" for vorticity divided by density (only for 2d polar)
+        # elif self.name == "vorticity":
+        #     # vorticity (= curl of v) is calculated at the lower right corner of each grid
+        #     vtheta = ReadField(directory, 'vx', nout, nx, ny).field
+        #     vr = ReadField(directory, 'vy', nout, nx, ny).field
+        #     grid = Grid(directory)
+        #     r = grid.y
+        #     theta = grid.x
+        #     rmid = grid.ymid
+        #     tmid = grid.xmid
+        #     dtheta = tmid[1]-tmid[0]  #evenly spaced theta
+        #     t2d, r2d = np.meshgrid(theta,r)
+        #     t2dm, r2dm = np.meshgrid(tmid,rmid)
+        #     # d(rvtheta)/dr
+        #     drdvtheta = (r2dm[1:,:]*vtheta[1:,:]-r2dm[:-1,:]*vtheta[:-1,:])/(r2dm[1:,:]-r2dm[:-1,:])
+        #     # adding the first ring equals to the second ring
+        #     drdvtheta = np.concatenate(([drdvtheta[0,:]],drdvtheta), axis=0)
+        #     # d(vr)/dtheta
+        #     dthetadvr = (vr[:,1:]-vr[:,:-1])/dtheta
+        #     # calculating the last column
+        #     dthetadvr = np.concatenate((dthetadvr,np.array([((vr[:,0]-vr[:,-1])/dtheta)]).T), axis=1)
+        #     #here is the vorticity
+        #     vorticity = (drdvtheta - dthetadvr)/r2dm
+        #     # vorticity is calculated now at the grid corners, 
+        #     # we need to bring it to the grid centre
+        #     # So we do a bilinear interpolation ...
+        #     vorticity_c = vorticity[:-1,:-1] * r2d[:-2,:-2] * (t2d[:-2,1:-1]-t2dm[:-1,:-1])  * (r2d[1:-1,:-2]-r2dm[:-1,:-1])
+        #     vorticity_c += vorticity[:-1,1:] * r2d[:-2,:-2] * (t2dm[:-1,:-1]-t2d[:-2,:-2])   * (r2d[1:-1,:-2]-r2dm[:-1,:-1])
+        #     vorticity_c += vorticity[1:,:-1] * r2d[:-2,:-2] * (t2d[:-2,1:-1]-t2dm[:-1,:-1])  * (r2dm[:-1,:-1]-r2d[:-2,:-2])
+        #     vorticity_c += vorticity[1:,1:]  * r2d[:-2,:-2] * (t2dm[:-1,:-1]-t2d[:-2,:-2])   * (r2dm[:-1,:-1]-r2d[:-2,:-2])
+        #     # we need to fill the last column
+        #     vorticity_c = np.concatenate((vorticity_c,np.array([vorticity_c[:,0]*0]).T), axis=1)
+        #     vorticity_c[:,-1] = vorticity[:-1,-1] * r[:-2] * (theta[-1]-tmid[-1])  * (r[1:-1]-rmid[:-1])
+        #     vorticity_c[:,-1] += vorticity[:-1,0] * r[:-2] * (tmid[-1]-theta[-2])   * (r[1:-1]-rmid[:-1])
+        #     vorticity_c[:,-1] += vorticity[1:,-1] * r[:-2] * (theta[-1]-tmid[-1])  * (rmid[:-1]-r[:-2])
+        #     vorticity_c[:,-1] += vorticity[1:,0]  * r[:-2] * (tmid[-1]-theta[-2])   * (rmid[:-1]-r[:-2])
+        #     # and low the last row
+        #     vorticity_c = np.concatenate((vorticity_c,[vorticity_c[-1,:]]), axis=0)
+        #     #
+        #     vorticity_c /= r2d[:-1,:-1] * (t2d[:-1,1:]-t2d[:-1,:-1]) * (r2d[1:,:-1]-r2d[:-1,:-1])
+        #     self.field = vorticity_c
+        # elif self.name == "vortensity":
+        #     dens = ReadField(directory, 'dens', nout, nx, ny).field 
+        #     vorticity = ReadField(directory, 'vorticity', nout, nx, ny).field
+        #     vortensity = vorticity/dens
+        #     self.field = vortensity
 
 class ReadPlanet():
     """
@@ -229,6 +293,23 @@ class ReadPlanet():
         total_torque = torq_in+torq_out
         total_power = pow_in+pow_out
         return total_torque, total_power, torq_in, torq_out, pow_in, pow_out
+    #
+    def GiveTorqueOnly(self):
+        """
+        Read the torq_planet file that is one of the monitoring files. Thus the line
+            MONITOR_Y  = TORQ
+        must be in your .opt file.
+
+        Returns
+        -------
+        date: array
+            the time in the unit of 2*pi
+        total_torque: array
+            total torque on the planet
+        """
+        filename = "{}monitor/gas/torq_planet_{}.dat".format(self.directory,self.index)
+        date, total_torque = np.loadtxt(filename, unpack=True)
+        return date, total_torque
     #
     def GiveXY(self):
         """

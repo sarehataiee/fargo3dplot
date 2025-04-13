@@ -66,7 +66,9 @@ def PlotField(directory, field, nout, fig, ax, cart=False, perturbation=False, r
     t2d, r2d = np.meshgrid(theta,r)
     t2dm, r2dm = np.meshgrid(tmid,rmid)
     #
-    data = ReadField(directory, field, nout, grid.nx, grid.ny).field
+    all_field = ReadField(directory, field, nout)
+    data = all_field.field
+    time = all_field.time
     if fieldlog:
         data = np.log10(data)
         
@@ -83,7 +85,7 @@ def PlotField(directory, field, nout, fig, ax, cart=False, perturbation=False, r
         x_label = r"$\theta$"
         y_label = r"$r$"
     if perturbation:
-        data_0 = ReadField(directory, field, 0, grid.nx, grid.ny).field
+        data_0 = ReadField(directory, field, 0).field
         data = (data-data_0)/data_0
         cb_label += " (perturbation)"
     if residual:
@@ -97,7 +99,7 @@ def PlotField(directory, field, nout, fig, ax, cart=False, perturbation=False, r
     #
     if not averaged:
         if settitle:
-            ax.set_title('{} at output {}'.format(field, nout), fontsize=13)
+            ax.set_title(f'{field} at output {nout}, t={time}', fontsize=13)
         cs1 = ax.pcolormesh(X, Y, data, shading='auto', **karg)
         if cbar:
             cb1 = plt.colorbar(cs1, ax=ax, orientation='vertical')
